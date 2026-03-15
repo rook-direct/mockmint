@@ -46,6 +46,12 @@ export default function Header() {
           >
             Create
           </Link>
+          <Link
+            href="/papers"
+            className="text-sm text-muted transition-colors hover:text-foreground"
+          >
+            Papers
+          </Link>
           <button
             onClick={toggleTheme}
             className="rounded-lg p-2 text-muted transition-colors hover:bg-card-bg hover:text-foreground"
@@ -88,6 +94,13 @@ export default function Header() {
             className="block py-2 text-sm text-muted transition-colors hover:text-foreground"
           >
             Create
+          </Link>
+          <Link
+            href="/papers"
+            onClick={() => setMenuOpen(false)}
+            className="block py-2 text-sm text-muted transition-colors hover:text-foreground"
+          >
+            Papers
           </Link>
         </nav>
       )}

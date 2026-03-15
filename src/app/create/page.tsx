@@ -13,21 +13,51 @@ import {
   Zap,
   Target,
   Grid3X3,
+  Loader2,
+  Download,
+  ExternalLink,
 } from "lucide-react";
-import { getTopicInfos, getCategories, getCategoryLabel } from "@/lib/questions";
-import { generatePaper, savePaper } from "@/lib/paper-generator";
+import { getTopicInfos, getCategories, getCategoryLabel, formatTopicLabel } from "@/lib/questions";
 import { useToast } from "@/components/Toast";
 import type { TopicInfo } from "@/lib/types";
 
 const STEPS = ["Configure", "Topics", "Generate"];
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+interface PaperMeta {
+  id: string;
+  tier: string;
+  calculator: boolean;
+  targetMarks: number;
+  topics: string[];
+  actualMarks: number;
+  questionCount: number;
+  createdAt: string;
+}
+
+function savePaperMeta(meta: PaperMeta) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem("mockmint-papers-v2");
+    const papers: PaperMeta[] = raw ? JSON.parse(raw) : [];
+    papers.unshift(meta);
+    // Keep last 50
+    localStorage.setItem("mockmint-papers-v2", JSON.stringify(papers.slice(0, 50)));
+  } catch {
+    // ignore
+  }
+}
+
 export default function CreatePage() {
   const router = useRouter();
   const { toast } = useToast();
   const [step, setStep] = useState(0);
+  const [generating, setGenerating] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
   // Config state
-  const [tier, setTier] = useState<"foundation" | "higher">("foundation");
+  const [tier, setTier] = useState<"foundation" | "higher">("higher");
   const [calculator, setCalculator] = useState(true);
   const [targetMarks, setTargetMarks] = useState(80);
   const [selectedTopics, setSelectedTopics] = useState<Set<string>>(new Set());
@@ -66,27 +96,73 @@ export default function CreatePage() {
     setSelectedTopics(new Set());
   }
 
-  function handleGenerate() {
+  async function handleGenerate() {
     if (selectedTopics.size === 0) {
       toast("Select at least one topic", "error");
       return;
     }
 
-    const paper = generatePaper({
-      tier,
-      calculator,
-      targetMarks,
-      topics: [...selectedTopics],
-    });
+    setGenerating(true);
+    setPdfUrl(null);
 
-    if (paper.questions.length === 0) {
-      toast("No questions found for this combination", "error");
-      return;
+    try {
+      const response = await fetch(`${API_URL}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tier,
+          calculator,
+          topics: [...selectedTopics],
+          targetMarks,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ detail: "Generation failed" }));
+        throw new Error(err.detail || `Server error: ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfUrl(url);
+
+      // Extract metadata from headers
+      const questionCount = parseInt(response.headers.get("X-Paper-Questions") || "0");
+      const actualMarks = parseInt(response.headers.get("X-Paper-Marks") || "0");
+      const topicsUsed = response.headers.get("X-Paper-Topics") || "";
+
+      // Save to history
+      savePaperMeta({
+        id: crypto.randomUUID(),
+        tier,
+        calculator,
+        targetMarks,
+        topics: topicsUsed ? topicsUsed.split(",") : [...selectedTopics],
+        actualMarks,
+        questionCount,
+        createdAt: new Date().toISOString(),
+      });
+
+      toast(`Paper generated — ${actualMarks} marks, ${questionCount} questions`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to generate paper";
+      toast(message, "error");
+    } finally {
+      setGenerating(false);
     }
+  }
 
-    savePaper(paper);
-    toast(`Paper generated — ${paper.totalMarks} marks, ${paper.questions.length} questions`);
-    router.push(`/paper/${paper.id}`);
+  function downloadPdf() {
+    if (!pdfUrl) return;
+    const a = document.createElement("a");
+    a.href = pdfUrl;
+    a.download = `mockmint-${tier}-${calculator ? "calc" : "noncalc"}-${targetMarks}m.pdf`;
+    a.click();
+  }
+
+  function openPdfInTab() {
+    if (!pdfUrl) return;
+    window.open(pdfUrl, "_blank");
   }
 
   // Heatmap color based on question count
@@ -377,21 +453,73 @@ export default function CreatePage() {
             </div>
           </div>
 
+          {/* PDF Result */}
+          {pdfUrl && (
+            <div className="rounded-2xl border border-mint/30 bg-mint/5 p-6 space-y-4">
+              <div className="text-center">
+                <div className="inline-flex items-center gap-2 rounded-full bg-mint/10 px-4 py-1.5 text-sm font-medium text-mint">
+                  <Check className="h-4 w-4" />
+                  Paper Generated Successfully
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={downloadPdf}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-mint px-6 py-3.5 text-base font-semibold text-white shadow-lg shadow-mint/20 transition-all hover:bg-mint-dark"
+                >
+                  <Download className="h-4 w-4" />
+                  Download PDF
+                </button>
+                <button
+                  onClick={openPdfInTab}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-mint/30 px-6 py-3.5 text-base font-semibold text-mint transition-all hover:bg-mint/10"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Open in New Tab
+                </button>
+              </div>
+              {/* Embedded preview */}
+              <div className="overflow-hidden rounded-xl border border-card-border">
+                <iframe
+                  src={pdfUrl}
+                  className="h-[600px] w-full"
+                  title="Generated Paper Preview"
+                />
+              </div>
+            </div>
+          )}
+
           {/* Nav buttons */}
           <div className="flex gap-3">
             <button
               onClick={() => setStep(1)}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-card-border px-6 py-3.5 text-base font-medium text-muted transition-all hover:border-mint/30"
+              disabled={generating}
+              className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-card-border px-6 py-3.5 text-base font-medium text-muted transition-all hover:border-mint/30 disabled:opacity-50"
             >
               <ChevronLeft className="h-4 w-4" />
               Back
             </button>
             <button
               onClick={handleGenerate}
-              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-mint px-6 py-3.5 text-base font-semibold text-white shadow-lg shadow-mint/20 transition-all hover:bg-mint-dark"
+              disabled={generating}
+              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-mint px-6 py-3.5 text-base font-semibold text-white shadow-lg shadow-mint/20 transition-all hover:bg-mint-dark disabled:opacity-50"
             >
-              <Sparkles className="h-4 w-4" />
-              Generate Paper
+              {generating ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Generating...
+                </>
+              ) : pdfUrl ? (
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  Regenerate Paper
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  Generate Paper
+                </>
+              )}
             </button>
           </div>
         </div>
